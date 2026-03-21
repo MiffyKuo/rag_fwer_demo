@@ -5,55 +5,6 @@ def compute_total_fwer(alpha_1, alpha_2, alpha_3):
     return alpha_1 + (1 - alpha_1) * alpha_2 + (1 - alpha_1) * (1 - alpha_2) * alpha_3
 
 
-def evaluate_one_setting(calib_data, retriever, reranker, generator,
-                         top_k, top_K, N_rag, lambda_g, lambda_s,
-                         tau_1, tau_2, tau_3):
-    A_list = []
-    B_list = []
-    C_list = []
-
-    for row in calib_data:
-        q = row["question"]
-        gold_doc_id = row["gold_doc_id"]
-        gold_answer = row["gold_answer"]
-
-        # Stage 1
-        retrieved = retriever.retrieve(q, top_k=top_k)
-        _, A_i = retriever_fail(retrieved, gold_doc_id, tau_1)
-        A_list.append(A_i)
-
-        if A_i == 1:
-            continue
-
-        # Stage 2
-        reranked = reranker.rerank(q, retrieved, top_K=top_K)
-        _, B_i = reranker_fail(reranked, gold_doc_id, tau_2)
-        B_list.append(B_i)
-
-        if B_i == 1:
-            continue
-
-        # Stage 3
-        contexts = reranked[:N_rag]
-        pred_answer = generator.generate_answer(q, contexts)
-        _, C_i = generator_fail(pred_answer, gold_answer, tau_3)
-        C_list.append(C_i)
-
-    fwer_1 = sum(A_list) / max(len(A_list), 1)
-    fwer_2 = sum(B_list) / max(len(B_list), 1)
-    fwer_3 = sum(C_list) / max(len(C_list), 1)
-
-    return {
-        "top_k": top_k,
-        "top_K": top_K,
-        "N_rag": N_rag,
-        "lambda_g": lambda_g,
-        "lambda_s": lambda_s,
-        "FWER_1": fwer_1,
-        "FWER_2": fwer_2,
-        "FWER_3": fwer_3,
-    }
-
 
 def time_proxy(top_k, top_K, N_rag, lambda_g):
     return top_k + top_K + N_rag + 2 * lambda_g
@@ -92,8 +43,17 @@ def evaluate_one_setting(calib_data, retriever, reranker, generator,
 
         # 3) Generator
         contexts = reranked[:N_rag]
-        pred_answer = generator.generate_answer(q, contexts)
-        _, C_i = generator_fail(pred_answer, gold_answer, tau_3)
+        contexts = reranked[:N_rag]
+
+        generation_set = generator.generate_answers(
+            q,
+            contexts,
+            lambda_g=lambda_g,
+            lambda_s=lambda_s
+        )
+
+        gen_risk, C_i = generator_fail(generation_set, gold_answer, tau_3)
+
         C_list.append(C_i)
 
     fwer_1 = sum(A_list) / max(len(A_list), 1)
