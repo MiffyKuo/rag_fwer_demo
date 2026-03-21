@@ -1,0 +1,5 @@
+{"qid": "train_tc_1", "question": "Which American-born Sinclair won the Nobel Prize for Literature in 1930?", "gold_answer": "Sinclair Lewis", "gold_doc_id": "train_tc_1"}
+{"qid": "train_tc_3", "question": "Where in England was Dame Judi Dench born?", "gold_answer": "York", "gold_doc_id": "train_tc_3"}
+{"qid": "train_tc_5", "question": "In which decade did Billboard magazine first publish and American hit chart?", "gold_answer": "30s", "gold_doc_id": "train_tc_5"}
+{"qid": "train_tc_8", "question": "From which country did Angola achieve independence in 1975?", "gold_answer": "Portugal", "gold_doc_id": "train_tc_8"}
+{"qid": "train_tc_9", "question": "Which city does David Soul come from?", "gold_answer": "Chicago", "gold_doc_id": "train_tc_9"}

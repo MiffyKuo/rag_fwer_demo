@@ -1,0 +1,3 @@
+{"qid": "valid_tc_2", "question": "Who was the man behind The Chipmunks?", "gold_answer": "David Seville", "gold_doc_id": "valid_tc_2"}
+{"qid": "valid_tc_33", "question": "Which Lloyd Webber musical premiered in the US on 10th December 1993?", "gold_answer": "Sunset Boulevard", "gold_doc_id": "valid_tc_33"}
+{"qid": "valid_tc_40", "question": "Who was the next British Prime Minister after Arthur Balfour?", "gold_answer": "Campbell-Bannerman", "gold_doc_id": "valid_tc_40"}
