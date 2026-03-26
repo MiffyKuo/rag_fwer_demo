@@ -1,10 +1,15 @@
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
+
 
 class RetrieverModule:
     def __init__(self, embedding_model: str):
-        self.embeddings = OpenAIEmbeddings(model=embedding_model)
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=embedding_model,
+            model_kwargs={"device": "cuda"}, # server 有 GPU : "cpu" -> "cuda"
+            encode_kwargs={"normalize_embeddings": True}
+        )
         self.vectorstore = None
 
     def build_index(self, corpus):

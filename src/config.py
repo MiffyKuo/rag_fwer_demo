@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import os
 
 @dataclass
 class RiskConfig:
@@ -7,13 +8,8 @@ class RiskConfig:
     tau_2: float = 0.0
     tau_3: float = 0.60
 
-    # alpha allocation 的搜尋格點
-    # 只搜尋 alpha_1, alpha_2，alpha_3 用總 FWER 公式反推
     alpha_grid_1: list = field(default_factory=lambda: [0.01, 0.03, 0.05, 0.08, 0.10, 0.15])
     alpha_grid_2: list = field(default_factory=lambda: [0.01, 0.03, 0.05, 0.08, 0.10, 0.15])
-
-    # alpha_grid: list = field(default_factory=lambda: [0.0, 0.1, 0.2, 0.3])
-
 
 @dataclass
 class SearchGrid:
@@ -23,10 +19,18 @@ class SearchGrid:
     lambda_g_list: list = field(default_factory=lambda: [1, 2])
     lambda_s_list: list = field(default_factory=lambda: [0.80])
 
-
 @dataclass
 class ModelConfig:
-    embedding_model: str = "text-embedding-3-large"
+    # Hugging Face embedding model
+    embedding_model: str = "models/all-mpnet-base-v2"
+    # 如果你不想先手動下載，也可以直接寫：
+    # embedding_model: str = "sentence-transformers/all-mpnet-base-v2"
+
     reranker_model: str = "BAAI/bge-reranker-base"
-    generator_model: str = "gpt-4.1-mini"
+
+    # gpt-oss
+    generator_model: str = "openai/gpt-oss-120b"
+    generator_api_base: str = os.getenv("GPTOSS_BASE_URL", "")
+    generator_api_key: str = os.getenv("GPTOSS_API_KEY", "dummy")
+
     temperature: float = 0.0

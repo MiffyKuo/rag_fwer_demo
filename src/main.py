@@ -6,23 +6,15 @@ from generator_module import GeneratorModule
 from calibrator import grid_search
 from pipeline import RiskControlledRAG
 
-# 整個程式的入口 : 
-# 1. 設定風險、
-# 2. 載入資料、
-# 3. 建 retriever / reranker / generator、
-# 4. 做 calibration 找最佳參數、
-# 5. 用最佳參數回答問題
 
 def main():
-    # 使用者只輸入整體 FWER
     risk_cfg = RiskConfig(
-    alpha_total=0.30,   # 先用 0.30 或 0.40 測試
-    tau_1=0.0,          # retriever 先保留 binary fail
-    tau_2=0.0,          # reranker 先保留 binary fail
-    tau_3=0.60          # 生成風險容忍門檻，不能設 0
+        alpha_total=0.30,
+        tau_1=0.0,
+        tau_2=0.0,
+        tau_3=0.60
     )
 
-    # alpha_grid = AlphaGrid()
     grid_cfg = SearchGrid()
     model_cfg = ModelConfig()
 
@@ -33,16 +25,22 @@ def main():
     retriever.build_index(corpus)
 
     reranker = SimpleReranker(model_cfg.reranker_model)
-    generator = GeneratorModule(model_cfg.ollama_model)
+
+    generator = GeneratorModule(
+        model_name=model_cfg.generator_model,
+        api_base=model_cfg.generator_api_base,
+        api_key=model_cfg.generator_api_key,
+        temperature=model_cfg.temperature
+    )
 
     best_params, all_results, feasible_results = grid_search(
-    calib_data=calib,
-    retriever=retriever,
-    reranker=reranker,
-    generator=generator,
-    risk_cfg=risk_cfg,
-    grid_cfg=grid_cfg
-)
+        calib_data=calib,
+        retriever=retriever,
+        reranker=reranker,
+        generator=generator,
+        risk_cfg=risk_cfg,
+        grid_cfg=grid_cfg
+    )
 
     if best_params is None:
         print("找不到滿足整體 FWER 門檻的參數組合。")
@@ -62,6 +60,7 @@ def main():
 
     print("Sample test question:", sample_q)
     print(result)
+
 
 if __name__ == "__main__":
     main()

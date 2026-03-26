@@ -2,19 +2,30 @@ import json
 import hashlib
 from pathlib import Path
 from typing import List
-from langchain_openai import ChatOpenAI
 from difflib import SequenceMatcher
+
+from langchain_openai import ChatOpenAI
+
 
 class GeneratorModule:
     def __init__(
         self,
-        model_name: str = "gpt-4.1-mini",
+        model_name: str,
+        api_base: str,
+        api_key: str,
         temperature: float = 0.0,
         cache_path: str = "data/generator_cache.json"
     ):
         self.model_name = model_name
         self.temperature = temperature
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
+
+        self.llm = ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            api_key=api_key,
+            base_url=api_base
+        )
+
         self.cache_path = Path(cache_path)
         self.cache = self._load_cache()
 
@@ -36,7 +47,6 @@ class GeneratorModule:
             context_texts.append(f"[Document {i}]\n{text}")
 
         joined_context = "\n\n".join(context_texts)
-
         prompt = f"""
 You are a helpful question-answering assistant.
 Answer the question only based on the provided documents.
@@ -45,8 +55,7 @@ If the answer is not supported by the documents, say "I do not know".
 Documents:
 {joined_context}
 
-Question:
-{question}
+Question: {question}
 
 Answer:
 """.strip()
