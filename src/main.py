@@ -20,9 +20,9 @@ def main():
         w_retrieval=0.1,
         w_reranker=0.2,
         w_generator=0.7,
-        tau_1=0.0,
-        tau_2=0.0,
-        tau_3=0.0,
+        tau_1=0.2,
+        tau_2=0.4,
+        tau_3=0.4,
     )
     search_cfg = SearchConfig()
     model_cfg = ModelConfig()

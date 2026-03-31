@@ -1,17 +1,13 @@
 import json
+import os
 from pathlib import Path
 from datasets import load_dataset
 from pprint import pprint
 
 OUTPUT_DIR = Path("data")
-
 TRAIN_SLICE = os.getenv("TRAIN_SLICE", "train[:40]")
 VALID_SLICE = os.getenv("VALID_SLICE", "validation[:20]")
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "1000"))
-# 正式版再用以下 :
-# TRAIN_SLICE = "train[:200]"
-# VALID_SLICE = "validation[:100]"
-# MAX_CONTEXT_CHARS = 1500
 
 
 def save_jsonl(rows, path: Path):
@@ -36,15 +32,8 @@ def first_nonempty(value):
 
 
 def get_nested_first_text(obj, possible_keys):
-    """
-    在 dict 裡找第一個可用文字欄位。
-    obj 可能是:
-    - dict of lists
-    - dict of strings
-    """
     if not isinstance(obj, dict):
         return None
-
     for key in possible_keys:
         if key in obj:
             ans = first_nonempty(obj[key])
@@ -54,21 +43,18 @@ def get_nested_first_text(obj, possible_keys):
 
 
 def extract_answer(row):
-    # 先列出常見答案欄位
     for key in ["answer", "value", "normalized_value", "aliases"]:
         if key in row:
             ans = first_nonempty(row[key])
             if ans:
                 return ans
 
-    # 有些版本 answer 可能是 dict
     answer_obj = row.get("answer")
     if isinstance(answer_obj, dict):
         for key in ["value", "normalized_value", "aliases"]:
             ans = get_nested_first_text(answer_obj, [key])
             if ans:
                 return ans
-
     return None
 
 
@@ -90,41 +76,61 @@ def extract_qid(row, fallback_idx):
     return f"row_{fallback_idx}"
 
 
-def extract_context_and_title(row):
+def extract_all_contexts(row):
+    """
+    回傳 list of dict:
+    [
+      {"source": "entity_pages", "title": ..., "context": ...},
+      {"source": "search_results", "title": ..., "context": ...},
+      ...
+    ]
+    """
     candidates = []
 
-    # entity_pages
     entity_pages = row.get("entity_pages")
     if isinstance(entity_pages, dict):
         titles = entity_pages.get("title", [])
         contexts = entity_pages.get("wiki_context", [])
-        for t, c in zip(titles, contexts):
+        for i, (t, c) in enumerate(zip(titles, contexts)):
             if c and str(c).strip():
-                candidates.append((t, str(c).strip()))
+                text = str(c).strip()
+                if len(text) > MAX_CONTEXT_CHARS:
+                    text = text[:MAX_CONTEXT_CHARS]
+                candidates.append({
+                    "source": "entity_pages",
+                    "title": str(t).strip() if t else "",
+                    "context": text,
+                    "local_idx": i,
+                })
 
-    # search_results
     search_results = row.get("search_results")
     if isinstance(search_results, dict):
         titles = search_results.get("title", [])
         contexts = search_results.get("search_context", [])
         descs = search_results.get("description", [])
-        for t, c, d in zip(titles, contexts, descs):
+        for i, (t, c, d) in enumerate(zip(titles, contexts, descs)):
             text = c if c and str(c).strip() else d
             if text and str(text).strip():
-                candidates.append((t, str(text).strip()))
+                text = str(text).strip()
+                if len(text) > MAX_CONTEXT_CHARS:
+                    text = text[:MAX_CONTEXT_CHARS]
+                candidates.append({
+                    "source": "search_results",
+                    "title": str(t).strip() if t else "",
+                    "context": text,
+                    "local_idx": i,
+                })
 
-    if not candidates:
-        return None, None
+    # 去重：title + context 相同就視為同一篇
+    seen = set()
+    deduped = []
+    for item in candidates:
+        key = (item["title"], item["context"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(item)
 
-    # 先選最長的 context
-    candidates.sort(key=lambda x: len(x[1]), reverse=True)
-    title, context = candidates[0]
-
-    if len(context) > MAX_CONTEXT_CHARS:
-        context = context[:MAX_CONTEXT_CHARS]
-
-    return title, context
-
+    return deduped
 
 def row_to_example(row, idx, prefix):
     question = extract_question(row)
@@ -171,18 +177,17 @@ def build_rows(dataset, prefix):
 
     for idx, row in enumerate(dataset):
         converted, err = row_to_example(row, idx, prefix)
-
         if converted is None:
             stats[err] += 1
             continue
 
-        corpus_row, qa_row = converted
+        row_corpus_rows, qa_row = converted
 
-        if corpus_row["doc_id"] in used_doc_ids:
-            continue
+        for corpus_row in row_corpus_rows:
+            if corpus_row["doc_id"] not in used_doc_ids:
+                used_doc_ids.add(corpus_row["doc_id"])
+                corpus_rows.append(corpus_row)
 
-        used_doc_ids.add(corpus_row["doc_id"])
-        corpus_rows.append(corpus_row)
         qa_rows.append(qa_row)
         stats["ok"] += 1
 

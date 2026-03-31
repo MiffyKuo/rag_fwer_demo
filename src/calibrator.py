@@ -31,24 +31,21 @@ def solve_alpha_3(alpha_total, alpha_1, alpha_2):
 # top-k 自動產生函數
 def auto_top_k_candidates(calib_data, retriever, search_cfg):
     """
-    Data-driven top-k candidates (Method B):
-    1. For each calibration query, retrieve up to max_top_k
-    2. Find the first rank where gold_doc_id appears
-    3. Add that rank plus small buffers
-    4. Merge with a few safe anchors
+    Data-driven top-k candidates (multi-gold version):
+    對每個 query，找第一個 relevant doc 出現的位置
     """
     ranks = set()
 
     for row in calib_data:
         q = row["question"]
-        gold_doc_id = row["gold_doc_id"]
+        gold_doc_ids = set(row["gold_doc_ids"])
 
         docs = retriever.retrieve(q, top_k=search_cfg.max_top_k)
 
         found_rank = None
         for idx, d in enumerate(docs, start=1):
             doc_id = d.metadata.get("doc_id", None)
-            if doc_id == gold_doc_id:
+            if doc_id in gold_doc_ids:
                 found_rank = idx
                 break
 
@@ -58,7 +55,6 @@ def auto_top_k_candidates(calib_data, retriever, search_cfg):
                 if search_cfg.min_top_k <= cand <= search_cfg.max_top_k:
                     ranks.add(cand)
 
-    # safe anchors
     anchors = [
         search_cfg.min_top_k,
         10, 20, 30, 50,
@@ -166,15 +162,18 @@ def evaluate_one_setting(
     for row in calib_data:
         qid = row["qid"]
         q = row["question"]
-        gold_doc_id = row["gold_doc_id"]
         gold_answer = row["gold_answer"]
 
+        gold_doc_ids = row.get("gold_doc_ids")
+        if gold_doc_ids is None:
+            gold_doc_ids = [row["gold_doc_id"]]
+            
         ret_key = (q, top_k)
         if ret_key not in retrieve_cache:
             retrieve_cache[ret_key] = retriever.retrieve(q, top_k=top_k)
         retrieved = retrieve_cache[ret_key]
 
-        _, A_i = retriever_fail(retrieved, gold_doc_id, tau_1)
+        _, A_i = retriever_fail(retrieved, gold_doc_ids, tau_1)
         A_list.append(A_i)
         if A_i == 1:
             fail_cases["retriever"].append(qid)
@@ -185,7 +184,7 @@ def evaluate_one_setting(
             rerank_cache[rerank_key] = reranker.rerank(q, retrieved, top_K=top_K)
         reranked = rerank_cache[rerank_key]
 
-        _, B_i = reranker_fail(reranked, gold_doc_id, tau_2)
+        _, B_i = reranker_fail(reranked, gold_doc_ids, tau_2)
         B_list.append(B_i)
         if B_i == 1:
             fail_cases["reranker"].append(qid)
