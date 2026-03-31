@@ -14,9 +14,9 @@ class RiskConfig:
 @dataclass
 class SearchGrid:
     # 先用小 grid 找方向
-    top_k_list: list = field(default_factory=lambda: [40, 80, 120])
-    top_K_list: list = field(default_factory=lambda: [3, 5, 8, 10])
-    N_rag_list: list = field(default_factory=lambda: [3, 5])
+    top_k_list: list = field(default_factory=lambda: [120, 150, 180, 200])
+    top_K_list: list = field(default_factory=lambda: [3, 4, 5, 6])
+    N_rag_list: list = field(default_factory=lambda: [3, 4, 5])
     lambda_g_list: list = field(default_factory=lambda: [1, 2, 4])
     lambda_s_list: list = field(default_factory=lambda: [0.80, 0.90])
 
