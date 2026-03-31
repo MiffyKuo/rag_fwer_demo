@@ -1,8 +1,23 @@
 from itertools import product
 from metrics import retriever_fail, reranker_fail, generator_fail
+from collections import defaultdict
 
 def allocation_total(alpha_1, alpha_2, alpha_3):
     return alpha_1 + (1 - alpha_1) * alpha_2 + (1 - alpha_1) * (1 - alpha_2) * alpha_3
+
+def end_to_end_fwer(fwer_1, fwer_2, fwer_3):
+    return (
+        fwer_1
+        + (1 - fwer_1) * fwer_2
+        + (1 - fwer_1) * (1 - fwer_2) * fwer_3
+    )
+
+def allocate_budgets(alpha_total, w1, w2, w3):
+    s = 1.0 - alpha_total
+    alpha_1 = 1.0 - s ** w1
+    alpha_2 = 1.0 - s ** w2
+    alpha_3 = 1.0 - s ** w3
+    return alpha_1, alpha_2, alpha_3
 
 def solve_alpha_3(alpha_total, alpha_1, alpha_2):
     denom = (1 - alpha_1) * (1 - alpha_2)
@@ -13,10 +28,118 @@ def solve_alpha_3(alpha_total, alpha_1, alpha_2):
         return alpha_3
     return None
 
+# top-k 自動產生函數
+def auto_top_k_candidates(calib_data, retriever, search_cfg):
+    """
+    Data-driven top-k candidates (Method B):
+    1. For each calibration query, retrieve up to max_top_k
+    2. Find the first rank where gold_doc_id appears
+    3. Add that rank plus small buffers
+    4. Merge with a few safe anchors
+    """
+    ranks = set()
+
+    for row in calib_data:
+        q = row["question"]
+        gold_doc_id = row["gold_doc_id"]
+
+        docs = retriever.retrieve(q, top_k=search_cfg.max_top_k)
+
+        found_rank = None
+        for idx, d in enumerate(docs, start=1):
+            doc_id = d.metadata.get("doc_id", None)
+            if doc_id == gold_doc_id:
+                found_rank = idx
+                break
+
+        if found_rank is not None:
+            for b in search_cfg.add_top_k_buffer:
+                cand = found_rank + b
+                if search_cfg.min_top_k <= cand <= search_cfg.max_top_k:
+                    ranks.add(cand)
+
+    # safe anchors
+    anchors = [
+        search_cfg.min_top_k,
+        10, 20, 30, 50,
+        search_cfg.max_top_k
+    ]
+    for a in anchors:
+        if search_cfg.min_top_k <= a <= search_cfg.max_top_k:
+            ranks.add(a)
+
+    top_k_candidates = sorted(ranks)
+    return top_k_candidates
+
+# top-K 自動產生函數
+def auto_top_K_candidates(top_k, mode="auto_sparse"):
+    """
+    Build reranker top-K candidates under a given top-k.
+    Must satisfy top_K <= top_k.
+    """
+    if mode == "auto_full":
+        return list(range(1, top_k + 1))
+
+    elif mode == "auto_sparse":
+        vals = {
+            1, 2, 3, 5,
+            max(1, top_k // 4),
+            max(1, top_k // 2),
+            top_k
+        }
+        return sorted(v for v in vals if 1 <= v <= top_k)
+
+    else:
+        raise ValueError(f"Unknown top_K_mode: {mode}")
+
+
+# generator thresholds 自動產生函數
+def auto_N_rag_candidates(top_K):
+    """
+    N_rag must satisfy N_rag <= top_K
+    """
+    return list(range(1, top_K + 1))
+
+
+def auto_lambda_g_candidates(search_cfg):
+    return list(range(1, search_cfg.max_lambda_g + 1))
+
+
+def auto_lambda_s_candidates(search_cfg):
+    return list(search_cfg.lambda_s_candidates)
+
+
+def build_threshold_candidates(calib_data, retriever, reranker, search_cfg):
+    """
+    Build all threshold candidate sets automatically.
+    """
+    top_k_candidates = auto_top_k_candidates(calib_data, retriever, search_cfg)
+
+    top_K_candidates_map = {}
+    N_rag_candidates_map = {}
+
+    for top_k in top_k_candidates:
+        top_Ks = auto_top_K_candidates(top_k, mode=search_cfg.top_K_mode)
+        top_K_candidates_map[top_k] = top_Ks
+
+        for top_K in top_Ks:
+            N_rag_candidates_map[(top_k, top_K)] = auto_N_rag_candidates(top_K)
+
+    lambda_g_candidates = auto_lambda_g_candidates(search_cfg)
+    lambda_s_candidates = auto_lambda_s_candidates(search_cfg)
+
+    return {
+        "top_k_candidates": top_k_candidates,
+        "top_K_candidates_map": top_K_candidates_map,
+        "N_rag_candidates_map": N_rag_candidates_map,
+        "lambda_g_candidates": lambda_g_candidates,
+        "lambda_s_candidates": lambda_s_candidates,
+    }
+
 def time_proxy(top_k, top_K, N_rag, lambda_g, avg_doc_tokens=180, L_query=30, L_out=64):
     # 依照你 PPT 的時間近似概念，給 reranker 和 generator 較高權重
     retrieval_cost = 1.0 * top_k
-    rerank_cost = 4.0 * top_k
+    rerank_cost = 4.0 * top_K
     gen_cost = lambda_g * (0.03 * (L_query + N_rag * avg_doc_tokens) + 1.0 * L_out)
     return retrieval_cost + rerank_cost + gen_cost
 
@@ -98,108 +221,148 @@ def evaluate_one_setting(
         "fail_cases": fail_cases,
     }
 
-def grid_search(calib_data, retriever, reranker, generator, risk_cfg, grid_cfg):
-    raw_results = []
-    feasible_results = []
+def grid_search(calib_data, retriever, reranker, generator, risk_cfg, search_cfg):
+    # -------------------------
+    # 1. alpha allocation
+    # -------------------------
+    if risk_cfg.allocation_mode == "weighted":
+        alpha_1, alpha_2, alpha_3 = allocate_budgets(
+            risk_cfg.alpha_total,
+            risk_cfg.w_retrieval,
+            risk_cfg.w_reranker,
+            risk_cfg.w_generator
+        )
+    else:
+        alpha_1 = alpha_2 = alpha_3 = None
+
+    # -------------------------
+    # 2. auto threshold candidates
+    # -------------------------
+    cand = build_threshold_candidates(
+        calib_data=calib_data,
+        retriever=retriever,
+        reranker=reranker,
+        search_cfg=search_cfg,
+    )
+
+    top_k_candidates = cand["top_k_candidates"]
+    top_K_candidates_map = cand["top_K_candidates_map"]
+    N_rag_candidates_map = cand["N_rag_candidates_map"]
+    lambda_g_candidates = cand["lambda_g_candidates"]
+    lambda_s_candidates = cand["lambda_s_candidates"]
 
     retrieve_cache = {}
     rerank_cache = {}
     gen_cache = {}
 
-    max_alpha_1 = max(risk_cfg.alpha_grid_1)
-    max_alpha_2 = max(risk_cfg.alpha_grid_2)
-    alpha_pairs = list(product(risk_cfg.alpha_grid_1, risk_cfg.alpha_grid_2))
+    raw_results = []
+    feasible_results = []
+    stage12_candidates = []
 
-    # 第一步：只掃 stage-1 / stage-2
-    surviving_stage12 = []
-    for top_k, top_K in product(grid_cfg.top_k_list, grid_cfg.top_K_list):
-        if top_K > top_k:
-            continue
+    # -------------------------
+    # 3. search stage 1 + 2
+    # -------------------------
+    for top_k in top_k_candidates:
+        for top_K in top_K_candidates_map[top_k]:
+            if top_K > top_k:
+                continue
 
-        stage12 = evaluate_stage12(
-            calib_data=calib_data,
-            retriever=retriever,
-            reranker=reranker,
-            top_k=top_k,
-            top_K=top_K,
-            tau_1=risk_cfg.tau_1,
-            tau_2=risk_cfg.tau_2,
-            retrieve_cache=retrieve_cache,
-            rerank_cache=rerank_cache,
-        )
+            s12 = evaluate_stage12(
+                calib_data=calib_data,
+                retriever=retriever,
+                reranker=reranker,
+                top_k=top_k,
+                top_K=top_K,
+                tau_1=risk_cfg.tau_1,
+                tau_2=risk_cfg.tau_2,
+                retrieve_cache=retrieve_cache,
+                rerank_cache=rerank_cache,
+            )
 
-        if stage12["FWER_1"] > max_alpha_1 or stage12["FWER_2"] > max_alpha_2:
-            continue
+            if risk_cfg.allocation_mode == "weighted":
+                if s12["FWER_1"] > alpha_1 + risk_cfg.safety_margin:
+                    continue
+                if s12["FWER_2"] > alpha_2 + risk_cfg.safety_margin:
+                    continue
 
-        surviving_stage12.append(stage12)
+            stage12_candidates.append(s12)
 
-    print(f"stage12 survive: {len(surviving_stage12)}")
+    # prune
+    stage12_candidates.sort(
+        key=lambda x: (x["FWER_1"] + x["FWER_2"], x["top_k"], x["top_K"])
+    )
+    stage12_candidates = stage12_candidates[:search_cfg.max_stage12_candidates]
 
-    # 第二步：只對 surviving pairs 掃 generator
-    for s12 in surviving_stage12:
+    print(f"stage12 candidates kept: {len(stage12_candidates)}")
+
+    # -------------------------
+    # 4. search stage 3
+    # -------------------------
+    for s12 in stage12_candidates:
         top_k = s12["top_k"]
         top_K = s12["top_K"]
 
-        for N_rag, lambda_g, lambda_s in product(
-            grid_cfg.N_rag_list,
-            grid_cfg.lambda_g_list,
-            grid_cfg.lambda_s_list
-        ):
-            if N_rag > top_K:
-                continue
+        for N_rag in N_rag_candidates_map[(top_k, top_K)]:
+            for lambda_g in lambda_g_candidates:
+                for lambda_s in lambda_s_candidates:
+                    s3 = evaluate_stage3(
+                        passed_rows=s12["passed_rows"],
+                        generator=generator,
+                        top_k=top_k,
+                        top_K=top_K,
+                        N_rag=N_rag,
+                        lambda_g=lambda_g,
+                        lambda_s=lambda_s,
+                        tau_3=risk_cfg.tau_3,
+                        gen_cache=gen_cache,
+                    )
 
-            stage3 = evaluate_stage3(
-                passed_rows=s12["passed_rows"],
-                generator=generator,
-                top_k=top_k,
-                top_K=top_K,
-                N_rag=N_rag,
-                lambda_g=lambda_g,
-                lambda_s=lambda_s,
-                tau_3=risk_cfg.tau_3,
-                gen_cache=gen_cache,
-            )
+                    fwer_1 = s12["FWER_1"]
+                    fwer_2 = s12["FWER_2"]
+                    fwer_3 = s3["FWER_3"]
 
-            res = {
-                "top_k": top_k,
-                "top_K": top_K,
-                "N_rag": N_rag,
-                "lambda_g": lambda_g,
-                "lambda_s": lambda_s,
-                "FWER_1": s12["FWER_1"],
-                "FWER_2": s12["FWER_2"],
-                "FWER_3": stage3["FWER_3"],
-            }
-            raw_results.append(res)
+                    pe_hat = end_to_end_fwer(fwer_1, fwer_2, fwer_3)
+                    total_time = time_proxy(top_k, top_K, N_rag, lambda_g)
 
-            for alpha_1, alpha_2 in alpha_pairs:
-                alpha_3 = solve_alpha_3(risk_cfg.alpha_total, alpha_1, alpha_2)
-                if alpha_3 is None:
-                    continue
+                    result = {
+                        "top_k": top_k,
+                        "top_K": top_K,
+                        "N_rag": N_rag,
+                        "lambda_g": lambda_g,
+                        "lambda_s": lambda_s,
+                        "FWER_1": fwer_1,
+                        "FWER_2": fwer_2,
+                        "FWER_3": fwer_3,
+                        "P(E)_hat": pe_hat,
+                        "time_proxy": total_time,
+                    }
 
-                if (
-                    res["FWER_1"] <= alpha_1 and
-                    res["FWER_2"] <= alpha_2 and
-                    res["FWER_3"] <= alpha_3
-                ):
-                    feasible_results.append({
-                        **res,
-                        "alpha_1": alpha_1,
-                        "alpha_2": alpha_2,
-                        "alpha_3": alpha_3,
-                        "P(E)_budget": allocation_total(alpha_1, alpha_2, alpha_3),
-                    })
+                    if risk_cfg.allocation_mode == "weighted":
+                        result["alpha_1"] = alpha_1
+                        result["alpha_2"] = alpha_2
+                        result["alpha_3"] = alpha_3
+
+                        feasible = (
+                            fwer_1 <= alpha_1 + risk_cfg.safety_margin
+                            and fwer_2 <= alpha_2 + risk_cfg.safety_margin
+                            and fwer_3 <= alpha_3 + risk_cfg.safety_margin
+                            and pe_hat <= risk_cfg.alpha_total + risk_cfg.safety_margin
+                        )
+                    else:
+                        feasible = pe_hat <= risk_cfg.alpha_total + risk_cfg.safety_margin
+
+                    raw_results.append(result)
+
+                    if feasible:
+                        feasible_results.append(result)
 
     if not feasible_results:
-        return None, raw_results, feasible_results
+        raw_results.sort(key=lambda x: (x["P(E)_hat"], x["time_proxy"]))
+        return None, raw_results, []
 
-    feasible_results.sort(
-        key=lambda x: (
-            time_proxy(x["top_k"], x["top_K"], x["N_rag"], x["lambda_g"]),
-            x["P(E)_budget"]
-        )
-    )
-    return feasible_results[0], raw_results, feasible_results
+    feasible_results.sort(key=lambda x: (x["time_proxy"], x["P(E)_hat"]))
+    best = feasible_results[0]
+    return best, raw_results, feasible_results
 
 def evaluate_stage12(
     calib_data, retriever, reranker, top_k, top_K, tau_1, tau_2,
