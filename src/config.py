@@ -35,7 +35,7 @@ class SearchConfig:
     add_top_k_buffer: tuple = (0, 2, 5)
 
     # -------- stage 2: reranker --------
-    top_K_step_mode: str = "auto"       # auto / full / coarse_to_fine(先粗搜，再細搜)
+    top_K_mode: str = "auto_sparse"       # auto / full / coarse_to_fine(先粗搜，再細搜)
 
     # -------- stage 3: generator --------
     max_lambda_g: int = 3

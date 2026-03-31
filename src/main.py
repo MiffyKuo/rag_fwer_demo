@@ -46,7 +46,7 @@ def main():
         reranker=reranker,
         generator=generator,
         risk_cfg=risk_cfg,
-        grid_cfg=grid_cfg,
+        search_cfg=search_cfg,
     )
 
     # 5. 搜尋結束後，再一次性存 cache
